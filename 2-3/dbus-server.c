@@ -5,8 +5,10 @@
 #include <sqlite3.h>
 #include <errno.h>
 #include <signal.h>
+#include <pthread.h>
 
 #define DATABASE_NAME "server_database.db"
+#define NUM_THREADS 2 // 线程数量
 
 // 定义 UserData 结构体，用于传递 D-Bus 和数据库指针
 typedef struct {
@@ -204,12 +206,28 @@ static const sd_bus_vtable calculator_vtable[] = {
     SD_BUS_VTABLE_END
 };
 
+// 线程函数：处理 D-Bus 消息
+void *dbus_thread_function(void *arg) {
+    UserData *data = (UserData *)arg;
+    sd_bus *bus = data->bus;
+
+    printf("DBus thread started\n");
+
+    for (;;) {
+        sd_bus_process(bus, NULL);
+        sd_bus_wait(bus, (uint64_t)-1);
+    }
+
+    return NULL;
+}
+
 // 主函数
 int main() {
     sd_bus *bus = NULL;
     sd_bus_slot *slot = NULL;
     sqlite3 *db = NULL;
     UserData *user_data = NULL;
+    pthread_t threads[NUM_THREADS];
     int r;
 
     printf("Starting database server...\n");
@@ -259,12 +277,19 @@ int main() {
 
     printf("Service name acquired successfully\n");
 
-    printf("Database server is running...\n");
+    // 创建多个线程来处理 D-Bus 消息
+    for (int i = 0; i < NUM_THREADS; i++) {
+        r = pthread_create(&threads[i], NULL, dbus_thread_function, user_data);
+        if (r != 0) {
+            fprintf(stderr, "Failed to create thread: %s\n", strerror(r));
+            goto finish;
+        }
+        printf("Created thread %d\n", i);
+    }
 
-    // 主事件循环
-    for (;;) {
-        sd_bus_process(bus, NULL);
-        sd_bus_wait(bus, (uint64_t)-1);
+    // 等待所有线程完成
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
     }
 
 finish:
